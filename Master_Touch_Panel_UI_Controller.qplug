@@ -1,6 +1,6 @@
 PluginInfo = {
   Name = "Master Touch Panel UI Controller",
-  Version = "7.2.9.15",
+  Version = "7.2.9.16",
   BuildVersion = "7.2.2.0",
   Id = "master_tp_ui.7.2",
   Author = "Dustin Bennett",
@@ -850,7 +850,10 @@ if Controls then
   -- without having to press 'Pull Live UCI Targets' first. Fails gracefully via the strategy chain.
   pcall(ScrapeUciLayers)
   
-  -- Explicitly evaluate UI state at boot so the Start_Page is actively tracked for the first transition off.
+  -- Explicitly initialize system to OFF state when program is sent or rebooted
+  Controls.System_Power_Off_Pulse:Trigger()
+  
+  -- Evaluate UI state at boot so the Start_Page is actively tracked for the first transition off.
   UpdateUI()
 
 end
