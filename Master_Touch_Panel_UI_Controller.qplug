@@ -1,0 +1,836 @@
+PluginInfo = {
+  Name = "Master Touch Panel UI Controller",
+  Version = "7.2.9.14",
+  BuildVersion = "7.2.2.0",
+  Id = "master_tp_ui.7.2",
+  Author = "Dustin Bennett",
+  Description = "Dynamic UI driver tracking global topologies, using Native Component.New RPC Sync, executing direct Uci.SetLayerVisibility with Auto-Wake diagnostics."
+}
+
+-- Cap on derived Page 1 subpage count so 2^N doesn't explode for large wall counts.
+local PAGE1_SUB_CAP = 20
+
+-- Compute how many subpages Page 1 should expose given the active wall count.
+-- Page 1 represents the global topology selector, so it has one subpage per wall-open combination (2^N).
+local function ComputePage1Subs(wall_count)
+  wall_count = wall_count or 0
+  local n = math.floor(2 ^ wall_count + 0.5)
+  if n > PAGE1_SUB_CAP then n = PAGE1_SUB_CAP end
+  if n < 1 then n = 1 end
+  return n
+end
+
+local function ResolveSubCount(page_idx, source)
+  local entry = source["Page " .. page_idx .. " Alternate Subs"]
+  if entry and entry.Value then return entry.Value end
+  return 0
+end
+
+function GetColor(props) return { 102, 102, 102 } end
+function GetPrettyName(props) return "Dynamic Master TP UI v7.2.2" end
+
+-- 1. PROPERTIES
+function GetProperties()
+  local props = {}
+
+  table.insert(props, { Name = "Room Association", Type = "string", Value = "A" })
+  table.insert(props, { Name = "Total UI Drivers", Type = "integer", Min = 1, Max = 20, Value = 4 })
+  table.insert(props, { Name = "Number of Walls", Type = "integer", Min = 0, Max = 10, Value = 2 })
+
+  table.insert(props, { Name = "Target UCI Name", Type = "string", Value = "Lobby_Panel" })
+  table.insert(props, { Name = "Target UCI Page", Type = "string", Value = "Main" })
+
+
+  table.insert(props, { Name = "Startup Main Page", Type = "integer", Min = 1, Max = 20, Value = 1 })
+
+  table.insert(props, { Name = "Number of Room Presets", Type = "integer", Min = 0, Max = 10, Value = 3 })
+  table.insert(props, { Name = "Number of Popups", Type = "integer", Min = 0, Max = 20, Value = 3 })
+  table.insert(props, { Name = "Number of Navigation Menus", Type = "integer", Min = 0, Max = 10, Value = 2 })
+  table.insert(props, { Name = "Number of Main Pages", Type = "integer", Min = 1, Max = 20, Value = 10 })
+
+  for i = 1, 20 do
+    table.insert(props, { Name = "Page " .. i .. " Alternate Subs", Type = "integer", Min = 0, Max = 20, Value = 0 })
+  end
+  return props
+end
+
+-- 1b. RECTIFY PROPERTIES
+-- Runs after any property change. Hides Page X entries beyond the active main page count and
+-- pins Page 1 Subpages to the derived wall-combination total so the user can't edit it directly.
+function RectifyProperties(props)
+  local main_count = props["Number of Main Pages"].Value
+
+  for i = 1, 20 do
+    local alt_entry = props["Page " .. i .. " Alternate Subs"]
+    local out_of_range = (i > main_count)
+
+    if alt_entry then alt_entry.IsHidden = out_of_range end
+  end
+
+  return props
+end
+
+-- 2. CONTROLS
+function GetControls(props)
+  local ctrls = {}
+  
+  table.insert(ctrls, { Name = "RPC_Command", ControlType = "Text", Count = 1, UserPin = false, PinStyle = "Both" })
+
+  table.insert(ctrls, { Name = "Current_Full_Page_Target", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "Current_Secondary_Sub_Target", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "Current_Popup_Target", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "Current_Topology", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
+  
+  table.insert(ctrls, { Name = "System_Start", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "System_Shutdown_Request", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Shutdown_Confirm", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Shutdown_Cancel", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "System_Power_On_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "System_Power_Off_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "System_Power_State", ControlType = "Indicator", IndicatorType = "Led", Count = 1, UserPin = true, PinStyle = "Output" })
+  
+  table.insert(ctrls, { Name = "Start_Page_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Shutdown_Page_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  
+  table.insert(ctrls, { Name = "Start_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "Shutdown_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+
+  table.insert(ctrls, { Name = "Refresh_Target_Lists", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+
+  for i = 1, props["Number of Walls"].Value do
+    table.insert(ctrls, { Name = "Wall_" .. i .. "_Open", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Wall_" .. i .. "_Linkage", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  end
+  
+  for i = 1, props["Number of Room Presets"].Value do
+    table.insert(ctrls, { Name = "Room_Preset_" .. i, ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  end
+  
+  table.insert(ctrls, { Name = "Close_Popup", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  for i = 1, props["Number of Popups"].Value do
+    table.insert(ctrls, { Name = "Popup_" .. i .. "_Toggle", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Popup_" .. i .. "_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Popup_" .. i .. "_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  end
+
+  for i = 1, props["Number of Navigation Menus"].Value do
+    table.insert(ctrls, { Name = "Navigation_Menu_" .. i .. "_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Navigation_Menu_" .. i .. "_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+  end
+  
+  for i = 1, props["Number of Main Pages"].Value do
+    table.insert(ctrls, { Name = "Main_Page_" .. i, ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Main_Page_" .. i .. "_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Main_Page_" .. i .. "_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    table.insert(ctrls, { Name = "Main_Page_" .. i .. "_Local_Only", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+    
+    local alt_count = ComputePage1Subs(props["Number of Walls"].Value)
+    for k = 0, alt_count - 1 do
+      table.insert(ctrls, { Name = "Main_Page_" .. i .. "_Alt_" .. k .. "_Active", ControlType = "Indicator", IndicatorType = "Led", Count = 1, UserPin = true, PinStyle = "Output" })
+    end
+
+    local sub_count = ResolveSubCount(i, props)
+    for j = 1, sub_count do
+       table.insert(ctrls, { Name = "Main_" .. i .. "_Sub_" .. j, ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Both" })
+       table.insert(ctrls, { Name = "Main_" .. i .. "_Sub_" .. j .. "_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+       table.insert(ctrls, { Name = "Main_" .. i .. "_Sub_" .. j .. "_Transition", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
+    end
+  end
+  
+  return ctrls
+end
+
+-- 3. LAYOUT
+function GetControlLayout(props)
+  local layout = {}
+  local graphics = {}
+  local header_color = {200, 200, 200}
+  local sys_color = {255, 150, 150}
+  
+  local y = 0
+  
+  table.insert(graphics, { Type = "Header", Text = "0. INSTRUCTIONS FOR MULTI-ROOM SYNC", Position = {0, y}, Size = {600, 20}, Color = sys_color })
+  table.insert(graphics, { Type = "Text", Text = string.format("For panels to sync automatically via walls, you MUST select this block, enable 'Script Access', and set its Code Name strictly to: UI_Controller_%s", props["Room Association"].Value), Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Bold" })
+  y = y + 50
+  
+  table.insert(graphics, { Type = "Header", Text = "1. Active Script Routing Outputs (Debug)", Position = {0, y}, Size = {600, 20}, Color = header_color })
+  table.insert(graphics, { Type = "Text", Text = "These display the explicit, live final target strings generated natively by the algorithm. Use this section strictly for troubleshooting designer routes.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+  y = y + 50
+  
+  layout["Current_Full_Page_Target"] = { Style = "Text", Position = {0, y}, Size = {130, 20} }
+  layout["Current_Secondary_Sub_Target"] = { Style = "Text", Position = {135, y}, Size = {130, 20} }
+  layout["Current_Popup_Target"] = { Style = "Text", Position = {270, y}, Size = {130, 20} }
+  y = y + 25
+  layout["Current_Topology"] = { Style = "Text", Position = {0, y}, Size = {130, 20} }
+  y = y + 40
+  
+  table.insert(graphics, { Type = "Header", Text = "2. System Power State Engine - Room (" .. props["Room Association"].Value .. ")", Position = {0, y}, Size = {600, 20}, Color = sys_color })
+  table.insert(graphics, { Type = "Text", Text = "Central power controls tying directly into room relays via logic. Commands are seamlessly synchronized across remote rooms natively via RPC.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+  y = y + 50
+  
+  layout["System_Start"] = { Style = "Button", Legend = "Sys Start", Position = {0, y}, Size = {90, 30} }
+  layout["System_Shutdown_Request"] = { Style = "Button", Legend = "Shutdown Req", Position = {100, y}, Size = {90, 30} }
+  layout["Shutdown_Confirm"] = { Style = "Button", Legend = "Confirm", Position = {200, y}, Size = {90, 30} }
+  layout["Shutdown_Cancel"] = { Style = "Button", Legend = "Cancel", Position = {300, y}, Size = {90, 30} }
+  y = y + 35
+  layout["Start_Page_TargetName"] = { Style = "ComboBox", Position = {0, y}, Size = {90, 20} }
+  layout["Start_Transition"] = { Style = "ComboBox", Position = {0, y+20}, Size = {90, 20} }
+  layout["System_Power_State"] = { Style = "Led", Legend = "Power Active", Position = {100, y}, Size = {90, 40} }
+  layout["Shutdown_Page_TargetName"] = { Style = "ComboBox", Position = {200, y}, Size = {90, 20} }
+  layout["Shutdown_Transition"] = { Style = "ComboBox", Position = {200, y+20}, Size = {90, 20} }
+  y = y + 45
+  layout["System_Power_On_Pulse"] = { Style = "Button", Legend = "Power ON Trigger", Position = {50, y}, Size = {130, 30} }
+  layout["System_Power_Off_Pulse"] = { Style = "Button", Legend = "Power OFF Trigger", Position = {210, y}, Size = {130, 30} }
+  y = y + 55
+  
+  local wx = props["Number of Walls"].Value
+  if wx > 0 then
+    table.insert(graphics, { Type = "Header", Text = "3. Combinable Wall Sensors", Position = {0, y}, Size = {600, 20}, Color = header_color })
+    table.insert(graphics, { Type = "Text", Text = "Wire active physical sensor pins tracking hardware walls. The engine seamlessly parses the dashed connections mapping adjacent combinable nodes.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+    y = y + 50
+    for i = 1, wx do
+      layout["Wall_" .. i .. "_Open"] = { Style = "Button", Legend = "Wall " .. i .. " Open", Position = {(i-1)*130, y}, Size = {90, 30} }
+      layout["Wall_" .. i .. "_Linkage"] = { Style = "Text", Position = {(i-1)*130, y+35}, Size = {90, 20} }
+    end
+    y = y + 75
+  end
+  
+  local popx = props["Number of Popups"].Value
+  if popx > 0 then
+    table.insert(graphics, { Type = "Header", Text = "4. Popup Engine Overlays", Position = {0, y}, Size = {600, 20}, Color = header_color })
+    table.insert(graphics, { Type = "Text", Text = "Execute native popups independent of any topology constraints. Use 'TargetName' inputs to dynamically map active layers against designer components.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+    y = y + 50
+    layout["Close_Popup"] = { Style = "Button", Legend = "Close Popup", Position = {0, y}, Size = {80, 50} }
+    for i = 1, popx do
+      layout["Popup_" .. i .. "_Toggle"] = { Style = "Button", Legend = "Pop " .. i, Position = {85 + (i-1)*90, y}, Size = {85, 30} }
+      -- ComboBox so Choices populated at runtime render as a real dropdown; users can still type a layer name manually.
+      layout["Popup_" .. i .. "_TargetName"] = { Style = "ComboBox", Position = {85 + (i-1)*90, y+35}, Size = {85, 20} }
+      layout["Popup_" .. i .. "_Transition"] = { Style = "ComboBox", Position = {85 + (i-1)*90, y+55}, Size = {85, 20} }
+    end
+    y = y + 90
+  end
+
+  local navx = props["Number of Navigation Menus"].Value
+  if navx > 0 then
+    table.insert(graphics, { Type = "Header", Text = "5. Always-On Navigation Menus", Position = {0, y}, Size = {600, 20}, Color = header_color })
+    table.insert(graphics, { Type = "Text", Text = "Explicitly target static navigation bars rendering on top of base layers securely.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+    y = y + 50
+    for i = 1, navx do
+      table.insert(graphics, { Type = "Text", Text = "Nav " .. i, Position = {0, y}, Size = {80, 20}, HTextAlign = "Right" })
+      layout["Navigation_Menu_" .. i .. "_TargetName"] = { Style = "ComboBox", Position = {85, y}, Size = {150, 20} }
+      layout["Navigation_Menu_" .. i .. "_Transition"] = { Style = "ComboBox", Position = {245, y}, Size = {100, 20} }
+      y = y + 25
+    end
+    y = y + 25
+  end
+
+  table.insert(graphics, { Type = "Header", Text = "6. Hierarchical Navigation Router", Position = {0, y}, Size = {600, 20}, Color = header_color })
+  table.insert(graphics, { Type = "Text", Text = "Define main routes seamlessly tracking explicit topology math. 'Local Only' directly forces strict local room association isolated from combinations. Subpages are strictly bound securely bypassing combiners naturally. Click 'Pull Targets' explicitly loading Dropdowns inside Q-SYS Designer emulation loops.", Position = {10, y+22}, Size = {580, 45}, HTextAlign = "Left", FontStyle = "Italic" })
+  y = y + 75
+  layout["Refresh_Target_Lists"] = { Style = "Button", Legend = "Pull Live UCI Targets", Position = {0, y}, Size = {150, 25} }
+  y = y + 35
+  for i = 1, props["Number of Main Pages"].Value do
+    layout["Main_Page_" .. i] = { Style = "Button", Legend = "Main " .. i, Position = {0, y}, Size = {85, 30} }
+    layout["Main_Page_" .. i .. "_TargetName"] = { Style = "ComboBox", Position = {85, y}, Size = {90, 20} }
+    layout["Main_Page_" .. i .. "_Transition"] = { Style = "ComboBox", Position = {175, y}, Size = {90, 20} }
+    layout["Main_Page_" .. i .. "_Local_Only"] = { Style = "Button", Legend = "Local Only", Position = {265, y}, Size = {80, 30} }
+
+    local sub_count = ResolveSubCount(i, props)
+    if sub_count > 0 then y = y + 35 end
+    for j = 1, sub_count do
+       layout["Main_" .. i .. "_Sub_" .. j] = { Style = "Button", Legend = "Sub " .. j, Position = {25 + (j-1)*100, y}, Size = {95, 30} }
+       layout["Main_" .. i .. "_Sub_" .. j .. "_TargetName"] = { Style = "ComboBox", Position = {25 + (j-1)*100, y+35}, Size = {95, 20} }
+       layout["Main_" .. i .. "_Sub_" .. j .. "_Transition"] = { Style = "ComboBox", Position = {25 + (j-1)*100, y+55}, Size = {95, 20} }
+    end
+    if sub_count > 0 then y = y + 55 end
+    y = y + 35
+  end
+  
+  return layout, graphics
+end
+
+-- 4. RUNTIME
+if Controls then
+  local sys_state = 0
+  local local_room = Properties["Room Association"].Value
+  
+  local uci_name = Properties["Target UCI Name"].Value
+  local uci_page = Properties["Target UCI Page"].Value
+  
+  local startup_main = Properties["Startup Main Page"].Value
+  
+  local wall_count = Properties["Number of Walls"].Value
+  local main_count = Properties["Number of Main Pages"].Value
+  local preset_count = Properties["Number of Room Presets"].Value
+  local popup_count = Properties["Number of Popups"].Value
+  local nav_count = Properties["Number of Navigation Menus"].Value
+  
+  local active_main = startup_main
+  local active_subs = {}
+  for i = 1, main_count do active_subs[i] = 1 end
+  
+  local active_popup = 0
+  
+  local last_bg_layer = ""
+  local last_sub_layer = ""
+  local last_popup_layer = ""
+  local last_nav_layers = {}
+  
+  local trans_choices = {"none", "fade", "slide right", "slide left", "slide up", "slide down"}
+  
+  Controls.Start_Transition.Choices = trans_choices
+  if Controls.Start_Transition.String == "" then Controls.Start_Transition.String = "fade" end
+  Controls.Shutdown_Transition.Choices = trans_choices
+  if Controls.Shutdown_Transition.String == "" then Controls.Shutdown_Transition.String = "fade" end
+
+  for i = 1, popup_count do
+     Controls["Popup_"..i.."_Transition"].Choices = trans_choices
+     if Controls["Popup_"..i.."_Transition"].String == "" then Controls["Popup_"..i.."_Transition"].String = "fade" end
+     if Controls["Popup_"..i.."_TargetName"].String == "" then Controls["Popup_"..i.."_TargetName"].String = "Popup_"..i end
+  end
+
+  for i = 1, nav_count do
+     Controls["Navigation_Menu_"..i.."_Transition"].Choices = trans_choices
+     if Controls["Navigation_Menu_"..i.."_Transition"].String == "" then Controls["Navigation_Menu_"..i.."_Transition"].String = "fade" end
+     if Controls["Navigation_Menu_"..i.."_TargetName"].String == "" then Controls["Navigation_Menu_"..i.."_TargetName"].String = "Nav_"..i end
+  end
+  
+  for i = 1, main_count do
+     Controls["Main_Page_"..i.."_Transition"].Choices = trans_choices
+     if Controls["Main_Page_"..i.."_Transition"].String == "" then Controls["Main_Page_"..i.."_Transition"].String = "fade" end
+     if Controls["Main_Page_"..i.."_TargetName"].String == "" then Controls["Main_Page_"..i.."_TargetName"].String = "Page_"..i end
+
+     local sub_cnt = ResolveSubCount(i, Properties)
+     for j = 1, sub_cnt do
+        Controls["Main_"..i.."_Sub_"..j.."_Transition"].Choices = trans_choices
+        if Controls["Main_"..i.."_Sub_"..j.."_Transition"].String == "" then Controls["Main_"..i.."_Sub_"..j.."_Transition"].String = "fade" end
+        if Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String == "" then Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String = "Sub_"..j end
+     end
+  end
+  
+  -- Strip a Q-SYS topology suffix (e.g. "-AB", "-A") from a layer name so the dropdown shows the base layer.
+  local function StripTopologySuffix(name)
+    if not name then return name end
+    return name:gsub("%-[A-Z]+$", "")
+  end
+
+  -- Push the same list of layer-base-name choices to every TargetName control we manage.
+  local function ApplyChoicesToTargetControls(compiled_choices)
+    if Controls.Start_Page_TargetName then Controls.Start_Page_TargetName.Choices = compiled_choices end
+    if Controls.Shutdown_Page_TargetName then Controls.Shutdown_Page_TargetName.Choices = compiled_choices end
+    for i = 1, nav_count do
+      Controls["Navigation_Menu_"..i.."_TargetName"].Choices = compiled_choices
+    end
+    for i = 1, popup_count do
+      Controls["Popup_"..i.."_TargetName"].Choices = compiled_choices
+    end
+    for i = 1, main_count do
+      Controls["Main_Page_"..i.."_TargetName"].Choices = compiled_choices
+      local s_cnt = ResolveSubCount(i, Properties)
+      for j = 1, s_cnt do
+        Controls["Main_"..i.."_Sub_"..j.."_TargetName"].Choices = compiled_choices
+      end
+    end
+  end
+
+  -- Strategy 1: try Uci.GetLayers (only exists on some Q-SYS builds).
+  local function TryUciGetLayers()
+    if not (Uci and Uci.GetLayers) then return nil end
+    local ok, results = pcall(Uci.GetLayers, uci_name, uci_page)
+    if not ok or type(results) ~= "table" then return nil end
+    local seen = {}
+    for _, L in ipairs(results) do
+      if L.Name then seen[StripTopologySuffix(L.Name)] = true end
+    end
+    return seen
+  end
+
+  -- Strategy 2: parse the UCI design JSON (works in Designer emulation and on Core).
+  -- Mirrors the approach used in the q-sys-module-uci-plus community module.
+  local function TryParseDesignJson()
+    local ok_req, json = pcall(require, "rapidjson")
+    if not ok_req or not json then return nil end
+    local ok_open, fh = pcall(io.open, "design/ucis.json", "r")
+    if not ok_open or not fh then return nil end
+    local text = fh:read("*a")
+    fh:close()
+    if not text or text == "" then return nil end
+    local ok_dec, parsed = pcall(json.decode, text)
+    if not ok_dec or type(parsed) ~= "table" or not parsed.Ucis then return nil end
+    local seen = {}
+    for _, U in ipairs(parsed.Ucis) do
+      if U.Name == uci_name and type(U.Pages) == "table" then
+        for _, P in ipairs(U.Pages) do
+          local match_page = (uci_page == "" or P.Name == uci_page)
+          if match_page and type(P.Layers) == "table" then
+            for _, L in ipairs(P.Layers) do
+              if L.Name then seen[StripTopologySuffix(L.Name)] = true end
+            end
+          end
+        end
+      end
+    end
+    return seen
+  end
+
+  -- Strategy 3: synthesize sensible defaults from the user-entered TargetName strings already present.
+  -- This keeps the dropdown populated even when no UCI introspection API is available.
+  local function HarvestExistingTargets()
+    local seen = {}
+    if Controls.Start_Page_TargetName then
+      local s1 = Controls.Start_Page_TargetName.String
+      if s1 and s1 ~= "" then seen[s1] = true end
+    end
+    if Controls.Shutdown_Page_TargetName then
+      local s2 = Controls.Shutdown_Page_TargetName.String
+      if s2 and s2 ~= "" then seen[s2] = true end
+    end
+    
+    for i = 1, nav_count do
+       local s = Controls["Navigation_Menu_"..i.."_TargetName"].String
+       if s and s ~= "" then seen[s] = true end
+    end
+    for i = 1, popup_count do
+      local s = Controls["Popup_"..i.."_TargetName"].String
+      if s and s ~= "" then seen[s] = true end
+    end
+    for i = 1, main_count do
+      local s = Controls["Main_Page_"..i.."_TargetName"].String
+      if s and s ~= "" then seen[s] = true end
+      local s_cnt = ResolveSubCount(i, Properties)
+      for j = 1, s_cnt do
+        local sub = Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String
+        if sub and sub ~= "" then seen[sub] = true end
+      end
+    end
+    return seen
+  end
+
+  local function ScrapeUciLayers()
+    if uci_name == "" then
+      print("INFO: UCI scrape skipped. Set the 'Target UCI Name' property first.")
+      return
+    end
+
+    local raw = TryUciGetLayers()
+    local source = "Uci.GetLayers API"
+
+    if not raw or next(raw) == nil then
+      raw = TryParseDesignJson()
+      source = "design/ucis.json"
+    end
+
+    if not raw or next(raw) == nil then
+      raw = HarvestExistingTargets()
+      source = "existing TargetName entries"
+    end
+
+    local compiled = {}
+    for k, _ in pairs(raw or {}) do table.insert(compiled, k) end
+    table.sort(compiled)
+
+    if #compiled > 0 then
+      print(string.format("UCI layer scrape OK (%d entries) via %s.", #compiled, source))
+      ApplyChoicesToTargetControls(compiled)
+    else
+      print("WARNING: No UCI layers discovered. Manual entry remains available; type names directly into the ComboBox fields.")
+    end
+  end
+
+  Controls.Refresh_Target_Lists.EventHandler = function()
+     ScrapeUciLayers()
+  end
+
+  local function SetLayerSafe(layer, isVisible, transition)
+    if layer and layer ~= "" and uci_name ~= "" and uci_page ~= "" then
+       local trans = transition or "none"
+       print(string.format("Layer Cmd -> %s : Visible=%s", layer, tostring(isVisible)))
+       pcall(function() Uci.SetLayerVisibility(uci_name, uci_page, layer, isVisible, trans) end)
+       pcall(function() Uci.SetSharedLayerVisibility(uci_name, layer, isVisible, trans) end)
+    end
+  end
+  
+  local function GetTopologyString()
+    local connected_rooms = {}
+    if local_room ~= "" then connected_rooms[local_room] = true end
+    
+    local changed = true
+    while changed do
+      changed = false
+      for w = 1, wall_count do
+        if Controls["Wall_"..w.."_Open"].Boolean then
+          
+          local link_str = Controls["Wall_"..w.."_Linkage"].String
+          local r1, r2 = link_str:match("(%w+)%s*%-%s*(%w+)")
+          if not r1 then 
+             r1, r2 = link_str:match("(%w+)%s*,%s*(%w+)") 
+          end
+          
+          if r1 and r2 then
+             if connected_rooms[r1] and not connected_rooms[r2] then
+               connected_rooms[r2] = true
+               changed = true
+             elseif connected_rooms[r2] and not connected_rooms[r1] then
+               connected_rooms[r1] = true
+               changed = true
+             end
+          end
+        end
+      end
+    end
+    
+    local room_list = {}
+    for r, _ in pairs(connected_rooms) do table.insert(room_list, r) end
+    table.sort(room_list)
+    return table.concat(room_list)
+  end
+
+  local function SyncBroadcast(cmd_str)
+     local topo = GetTopologyString()
+     for r in topo:gmatch(".") do
+        if r ~= local_room and r ~= "" then
+           pcall(function()
+              local comp = Component.New("UI_Controller_" .. r)
+              if comp and comp["RPC_Command"] then comp["RPC_Command"].String = cmd_str end
+           end)
+        end
+     end
+  end
+
+  local function UpdateUI()
+    local topo_str = GetTopologyString()
+    
+    -- Priority 1: STRICTLY update physical boolean buttons instantly before any string scraping
+    if sys_state == 0 then
+      Controls.System_Power_State.Boolean = false
+      for i=1, main_count do Controls["Main_Page_"..i].Boolean = false end
+      for i=1, main_count do
+         local sc = ResolveSubCount(i, Properties)
+         for j=1, sc do Controls["Main_"..i.."_Sub_"..j].Boolean = false end
+      end
+    elseif sys_state == 1 then
+      Controls.System_Power_State.Boolean = true
+      for i=1, main_count do Controls["Main_Page_"..i].Boolean = (i == active_main) end
+
+      for i=1, main_count do
+         local sc = ResolveSubCount(i, Properties)
+         for j=1, sc do
+            Controls["Main_"..i.."_Sub_"..j].Boolean = (j == active_subs[i])
+         end
+      end
+    elseif sys_state == 2 then
+      Controls.System_Power_State.Boolean = true
+      for i=1, main_count do Controls["Main_Page_"..i].Boolean = false end
+      for i=1, main_count do
+         local sc = ResolveSubCount(i, Properties)
+         for j=1, sc do Controls["Main_"..i.."_Sub_"..j].Boolean = false end
+      end
+    end
+
+    -- Priority 2: Execute explicit string formatting safely natively mapping to arrays
+    local topo_idx = 0 
+    
+    for w = 1, wall_count do
+      if Controls["Wall_"..w.."_Open"].Boolean then
+        topo_idx = topo_idx + (2^(w-1))
+      end
+    end
+
+    Controls.Current_Topology.String = topo_str
+    
+    local new_bg_layer = ""
+    local new_sub_layer = ""
+    local new_popup_layer = ""
+    local bg_trans = "none"
+    local sub_trans = "none"
+    local pop_trans = "none"
+    
+    local start_pg_name = ""
+    if Controls.Start_Page_TargetName then start_pg_name = Controls.Start_Page_TargetName.String end
+    local shut_pg_name = ""
+    if Controls.Shutdown_Page_TargetName then shut_pg_name = Controls.Shutdown_Page_TargetName.String end
+    
+    local function append_suffix(name, suffix)
+       if wall_count == 0 then return name end
+       if not suffix or suffix == "" then return name end
+       return name .. "-" .. suffix
+    end
+    
+    if sys_state == 0 then
+      new_bg_layer = start_pg_name
+      bg_trans = Controls.Start_Transition.String
+      
+    elseif sys_state == 1 then
+      local p_name = Controls["Main_Page_"..active_main.."_TargetName"].String
+      if Controls["Main_Page_"..active_main.."_Local_Only"].Boolean then
+         new_bg_layer = append_suffix(p_name, local_room)
+      else
+         new_bg_layer = append_suffix(p_name, topo_str)
+      end
+      bg_trans = Controls["Main_Page_"..active_main.."_Transition"].String
+      
+      local master_sub_count = ResolveSubCount(active_main, Properties)
+      if master_sub_count > 0 then
+         local act_s = active_subs[active_main]
+         if act_s > master_sub_count then act_s = master_sub_count end -- bounds check defense
+         local s_name = Controls["Main_"..active_main.."_Sub_"..act_s.."_TargetName"].String
+         if Controls["Main_Page_"..active_main.."_Local_Only"].Boolean then
+            new_sub_layer = append_suffix(s_name, local_room)
+         else
+            new_sub_layer = append_suffix(s_name, topo_str)
+         end
+         sub_trans = Controls["Main_"..active_main.."_Sub_"..act_s.."_Transition"].String
+      end
+      
+    elseif sys_state == 2 then
+      new_bg_layer = shut_pg_name
+      bg_trans = Controls.Shutdown_Transition.String
+    end
+    
+    if new_bg_layer ~= last_bg_layer then
+       SetLayerSafe(last_bg_layer, false, bg_trans)
+       SetLayerSafe(new_bg_layer, true, bg_trans)
+       last_bg_layer = new_bg_layer
+    end
+    
+    -- Aggressive nuke: ensure Start_Page is relentlessly forced OFF if we are not in State 0
+    if sys_state ~= 0 and start_pg_name ~= "" and new_bg_layer ~= start_pg_name then
+       SetLayerSafe(start_pg_name, false, "none")
+    end
+    
+    Controls.Current_Full_Page_Target.String = new_bg_layer
+    
+    if new_sub_layer ~= last_sub_layer then
+       if last_sub_layer ~= "" then SetLayerSafe(last_sub_layer, false, sub_trans) end
+       if new_sub_layer ~= "" then SetLayerSafe(new_sub_layer, true, sub_trans) end
+       last_sub_layer = new_sub_layer
+    end
+    Controls.Current_Secondary_Sub_Target.String = new_sub_layer
+    
+    for i = 1, main_count do
+      local sub_active = (sys_state == 1 and i == active_main)
+      local alt_count = ComputePage1Subs(wall_count)
+      for k = 0, alt_count - 1 do
+         Controls["Main_Page_"..i.."_Alt_"..k.."_Active"].Boolean = (sub_active and k == topo_idx)
+      end
+    end
+    
+    if active_popup > 0 then
+       local p_name = Controls["Popup_"..active_popup.."_TargetName"].String
+       new_popup_layer = p_name
+       pop_trans = Controls["Popup_"..active_popup.."_Transition"].String
+    end
+    
+    if new_popup_layer ~= last_popup_layer then
+       SetLayerSafe(last_popup_layer, false, pop_trans)
+       SetLayerSafe(new_popup_layer, true, pop_trans)
+       last_popup_layer = new_popup_layer
+    end
+    Controls.Current_Popup_Target.String = new_popup_layer
+    
+    for i = 1, nav_count do
+       local new_nav_layer = ""
+       local nav_trans = Controls["Navigation_Menu_"..i.."_Transition"].String
+       if sys_state ~= 0 then
+          new_nav_layer = Controls["Navigation_Menu_"..i.."_TargetName"].String
+       end
+       
+       if new_nav_layer ~= last_nav_layers[i] then
+          if last_nav_layers[i] and last_nav_layers[i] ~= "" then
+             SetLayerSafe(last_nav_layers[i], false, nav_trans)
+          end
+          if new_nav_layer ~= "" then
+             SetLayerSafe(new_nav_layer, true, nav_trans)
+          end
+          last_nav_layers[i] = new_nav_layer
+       end
+    end
+  end
+
+  local function PerformAutoWake()
+     if sys_state ~= 1 then
+        Controls.System_Start:Trigger()  -- This routes through the standard boot sequence elegantly!
+     end
+  end
+
+  Controls.RPC_Command.EventHandler = function(ctrl)
+    local cmd = ctrl.String
+    if cmd == "" then return end
+    
+    if cmd == "START" then
+       if sys_state == 0 then
+          sys_state = 1
+          active_main = startup_main
+          Controls.System_Power_On_Pulse:Trigger()
+          UpdateUI()
+       end
+    elseif cmd == "SHUTDOWN_REQ" then
+       if sys_state == 1 then
+          sys_state = 2
+          UpdateUI()
+       end
+    elseif cmd == "SHUTDOWN_CONFIRM" then
+       if sys_state == 2 then
+          sys_state = 0
+          active_popup = 0
+          for x = 1, popup_count do Controls["Popup_"..x.."_Toggle"].Boolean = false end
+          Controls.System_Power_Off_Pulse:Trigger()
+          UpdateUI()
+       end
+    elseif cmd == "SHUTDOWN_CANCEL" then
+       if sys_state == 2 then
+          sys_state = 1
+          UpdateUI()
+       end
+    else
+       local action, param = cmd:match("(%w+)%|(%d+)")
+       if action == "PRESET" then
+          if sys_state == 1 then
+             local p = tonumber(param)
+             active_main = startup_main
+             UpdateUI()
+          end
+       end
+    end
+    ctrl.String = ""
+  end
+
+  Controls.System_Start.EventHandler = function(ctrl)
+    if sys_state == 0 then
+       sys_state = 1
+       active_main = startup_main
+       SyncBroadcast("START")
+       Controls.System_Power_On_Pulse:Trigger()
+       UpdateUI()
+    end
+  end
+  
+  Controls.System_Shutdown_Request.EventHandler = function(ctrl)
+    if sys_state == 1 then
+       sys_state = 2
+       SyncBroadcast("SHUTDOWN_REQ")
+       UpdateUI()
+    end
+  end
+  
+  Controls.Shutdown_Confirm.EventHandler = function(ctrl)
+    if sys_state == 2 then
+       sys_state = 0
+       active_popup = 0
+       for x = 1, popup_count do Controls["Popup_"..x.."_Toggle"].Boolean = false end
+       SyncBroadcast("SHUTDOWN_CONFIRM")
+       Controls.System_Power_Off_Pulse:Trigger()
+       UpdateUI()
+    end
+  end
+  
+  Controls.Shutdown_Cancel.EventHandler = function(ctrl)
+    if sys_state == 2 then
+       sys_state = 1
+       SyncBroadcast("SHUTDOWN_CANCEL")
+       UpdateUI()
+    end
+  end
+
+  for i = 1, main_count do
+    Controls["Main_Page_"..i].EventHandler = function(ctrl)
+      PerformAutoWake()
+      
+      if ctrl.Boolean then
+         if active_main ~= i then
+            active_main = i
+            UpdateUI()
+         end
+      else
+         if active_main == i then
+            ctrl.Boolean = true 
+            UpdateUI()
+         end
+      end
+    end
+    Controls["Main_Page_"..i.."_Local_Only"].EventHandler = function() UpdateUI() end
+    Controls["Main_Page_"..i.."_TargetName"].EventHandler = function() UpdateUI() end
+
+    local s_cnt = ResolveSubCount(i, Properties)
+    for j = 1, s_cnt do
+       Controls["Main_"..i.."_Sub_"..j].EventHandler = function(ctrl)
+          PerformAutoWake()
+          
+          if ctrl.Boolean then
+             if active_subs[i] ~= j then
+                active_subs[i] = j
+                UpdateUI()
+             end
+          else
+             if active_subs[i] == j then
+                ctrl.Boolean = true
+                UpdateUI()
+             end
+          end
+       end
+       Controls["Main_"..i.."_Sub_"..j.."_TargetName"].EventHandler = function() UpdateUI() end
+    end
+  end
+  
+  Controls.Close_Popup.EventHandler = function()
+     if active_popup > 0 then
+        active_popup = 0
+        for x = 1, popup_count do Controls["Popup_"..x.."_Toggle"].Boolean = false end
+        UpdateUI()
+     end
+  end
+  
+  for p = 1, popup_count do
+    Controls["Popup_"..p.."_Toggle"].EventHandler = function(ctrl)
+       PerformAutoWake()
+       
+       if ctrl.Boolean then
+          if active_popup ~= p then
+             active_popup = p
+             for x = 1, popup_count do 
+               if x ~= p then Controls["Popup_"..x.."_Toggle"].Boolean = false end 
+             end
+             UpdateUI()
+          end
+       else
+          if active_popup == p then 
+             ctrl.Boolean = true
+             UpdateUI()
+          end
+       end
+    end
+    Controls["Popup_"..p.."_TargetName"].EventHandler = function() UpdateUI() end
+  end
+  
+  for n = 1, nav_count do
+    Controls["Navigation_Menu_"..n.."_TargetName"].EventHandler = function() UpdateUI() end
+  end
+
+  for p = 1, preset_count do
+    Controls["Room_Preset_"..p].EventHandler = function(ctrl)
+       if sys_state == 1 and ctrl.Boolean then
+          active_main = startup_main
+          SyncBroadcast("PRESET|"..p)
+          UpdateUI()
+       end
+    end
+  end
+  
+  local def_links = {"A-B", "B-C", "C-D", "D-E", "E-F", "F-G", "G-H", "H-I", "I-J", "J-K"}
+  for w = 1, wall_count do
+    if Controls["Wall_"..w.."_Linkage"].String == "" then Controls["Wall_"..w.."_Linkage"].String = def_links[w] or "X-Y" end
+    Controls["Wall_"..w.."_Linkage"].EventHandler = function() UpdateUI() end
+    Controls["Wall_"..w.."_Open"].EventHandler = function() UpdateUI() end
+  end
+
+  if Controls.Start_Page_TargetName then Controls.Start_Page_TargetName.EventHandler = function() UpdateUI() end end
+  if Controls.Shutdown_Page_TargetName then Controls.Shutdown_Page_TargetName.EventHandler = function() UpdateUI() end end
+
+  -- Auto-populate the TargetName ComboBox Choices on plugin load so users see the dropdown
+  -- without having to press 'Pull Live UCI Targets' first. Fails gracefully via the strategy chain.
+  pcall(ScrapeUciLayers)
+  
+  -- Explicitly evaluate UI state at boot so the Start_Page is actively tracked for the first transition off.
+  UpdateUI()
+
+end
