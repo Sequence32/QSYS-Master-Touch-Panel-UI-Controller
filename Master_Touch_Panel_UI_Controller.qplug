@@ -1,6 +1,6 @@
 PluginInfo = {
   Name = "Master Touch Panel UI Controller",
-  Version = "7.2.9.16",
+  Version = "7.2.9.17",
   BuildVersion = "7.2.2.0",
   Id = "master_tp_ui.7.2",
   Author = "Dustin Bennett",
@@ -609,6 +609,30 @@ if Controls then
        SetLayerSafe(start_pg_name, false, "none")
     end
     
+    -- Aggressive nuke: ensure all possible pages are forced OFF if in State 0
+    if sys_state == 0 then
+       for i=1, main_count do
+          local p_name = Controls["Main_Page_"..i.."_TargetName"].String
+          if p_name ~= "" and p_name ~= start_pg_name then
+             SetLayerSafe(append_suffix(p_name, local_room), false, "none")
+             SetLayerSafe(append_suffix(p_name, topo_str), false, "none")
+          end
+          local sc = ResolveSubCount(i, Properties)
+          for j=1, sc do
+             local s_name = Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String
+             if s_name ~= "" then
+                SetLayerSafe(append_suffix(s_name, local_room), false, "none")
+                SetLayerSafe(append_suffix(s_name, topo_str), false, "none")
+             end
+          end
+       end
+       for x=1, popup_count do
+          local pop_name = Controls["Popup_"..x.."_TargetName"].String
+          if pop_name ~= "" then SetLayerSafe(pop_name, false, "none") end
+       end
+       if shut_pg_name ~= "" and shut_pg_name ~= start_pg_name then SetLayerSafe(shut_pg_name, false, "none") end
+    end
+    
     Controls.Current_Full_Page_Target.String = new_bg_layer
     
     if new_sub_layer ~= last_sub_layer then
@@ -725,7 +749,7 @@ if Controls then
   end
   
   Controls.Shutdown_Confirm.EventHandler = function(ctrl)
-    if sys_state == 2 then
+    if sys_state ~= 0 then
        sys_state = 0
        active_popup = 0
        for x = 1, popup_count do Controls["Popup_"..x.."_Toggle"].Boolean = false end
