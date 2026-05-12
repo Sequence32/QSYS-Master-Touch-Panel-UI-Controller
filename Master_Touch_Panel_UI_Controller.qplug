@@ -1,6 +1,6 @@
 PluginInfo = {
   Name = "Master Touch Panel UI Controller",
-  Version = "7.2.9.14",
+  Version = "7.2.9.15",
   BuildVersion = "7.2.2.0",
   Id = "master_tp_ui.7.2",
   Author = "Dustin Bennett",
@@ -85,8 +85,8 @@ function GetControls(props)
   table.insert(ctrls, { Name = "System_Shutdown_Request", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
   table.insert(ctrls, { Name = "Shutdown_Confirm", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
   table.insert(ctrls, { Name = "Shutdown_Cancel", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
-  table.insert(ctrls, { Name = "System_Power_On_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Output" })
-  table.insert(ctrls, { Name = "System_Power_Off_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Output" })
+  table.insert(ctrls, { Name = "System_Power_On_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
+  table.insert(ctrls, { Name = "System_Power_Off_Pulse", ControlType = "Button", ButtonType = "Trigger", Count = 1, UserPin = true, PinStyle = "Both" })
   table.insert(ctrls, { Name = "System_Power_State", ControlType = "Indicator", IndicatorType = "Led", Count = 1, UserPin = true, PinStyle = "Output" })
   
   table.insert(ctrls, { Name = "Start_Page_TargetName", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Both" })
@@ -222,6 +222,17 @@ function GetControlLayout(props)
       y = y + 25
     end
     y = y + 25
+  end
+
+  local presetx = props["Number of Room Presets"].Value
+  if presetx > 0 then
+    table.insert(graphics, { Type = "Header", Text = "5b. Room Presets", Position = {0, y}, Size = {600, 20}, Color = header_color })
+    table.insert(graphics, { Type = "Text", Text = "Execute room presets, syncing across connected topologies.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+    y = y + 50
+    for i = 1, presetx do
+      layout["Room_Preset_" .. i] = { Style = "Button", Legend = "Preset " .. i, Position = {(i-1)*90, y}, Size = {85, 30} }
+    end
+    y = y + 45
   end
 
   table.insert(graphics, { Type = "Header", Text = "6. Hierarchical Navigation Router", Position = {0, y}, Size = {600, 20}, Color = header_color })
@@ -732,6 +743,14 @@ if Controls then
     end
   end
 
+  Controls.System_Power_On_Pulse.EventHandler = function(ctrl)
+    Controls.System_Start:Trigger()
+  end
+  
+  Controls.System_Power_Off_Pulse.EventHandler = function(ctrl)
+    Controls.Shutdown_Confirm:Trigger()
+  end
+
   for i = 1, main_count do
     Controls["Main_Page_"..i].EventHandler = function(ctrl)
       PerformAutoWake()
@@ -808,6 +827,7 @@ if Controls then
 
   for p = 1, preset_count do
     Controls["Room_Preset_"..p].EventHandler = function(ctrl)
+       PerformAutoWake()
        if sys_state == 1 and ctrl.Boolean then
           active_main = startup_main
           SyncBroadcast("PRESET|"..p)
