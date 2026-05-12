@@ -1,6 +1,7 @@
 PluginInfo = {
-  Name = "Master Touc8",
-  BuildVersion = "7.2.2.18",
+  Name = "Master Touch Panel UI Controller",
+  Version = "7.2.9.20",
+  BuildVersion = "7.2.2.0",
   Id = "master_tp_ui.7.2",
   Author = "Dustin Bennett",
   Description = "Dynamic UI driver tracking global topologies, using Native Component.New RPC Sync, executing direct Uci.SetLayerVisibility with Auto-Wake diagnostics."
@@ -441,10 +442,6 @@ if Controls then
     else
       print("WARNING: No UCI layers discovered. Manual entry remains available; type names directly into the ComboBox fields.")
     end
-  end
-
-  Controls.Refresh_Target_Lists.EventHandler = function()
-     ScrapeUciLayers()
   end
 
   local function SetLayerSafe(layer, isVisible, transition)
