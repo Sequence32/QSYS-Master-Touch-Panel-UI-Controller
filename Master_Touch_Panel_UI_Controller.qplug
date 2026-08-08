@@ -1,7 +1,7 @@
 PluginInfo = {
   Name = "Master Touch Panel UI Controller",
-  Version = "7.2.9.20",
-  BuildVersion = "7.2.2.0",
+  Version = "7.2.9.35",
+  BuildVersion = "7.2.2.1",
   Id = "master_tp_ui.7.2",
   Author = "Dustin Bennett",
   Description = "Dynamic UI driver tracking global topologies, using Native Component.New RPC Sync, executing direct Uci.SetLayerVisibility with Auto-Wake diagnostics."
@@ -34,14 +34,28 @@ function GetProperties()
   local props = {}
 
   table.insert(props, { Name = "Room Association", Type = "string", Value = "A" })
+  -- Peers find each other by Component code name = <prefix><Room letter>, e.g.
+  -- "MasterTouchPanelUIController_B". Set this to match the code names you give the
+  -- panels (and enable Script Access on each). Must be identical on every panel.
+  table.insert(props, { Name = "Peer Code Name Prefix", Type = "string", Value = "MasterTouchPanelUIController_" })
   table.insert(props, { Name = "Total UI Drivers", Type = "integer", Min = 1, Max = 20, Value = 4 })
   table.insert(props, { Name = "Number of Walls", Type = "integer", Min = 0, Max = 10, Value = 2 })
+  -- Read wall state straight from the Wall State Manager component (no need to wire
+  -- each panel's Wall_x_Open). '#' in the pin pattern is replaced by the wall number.
+  -- Leave the code name blank to disable and use only the wired Wall_x_Open pins.
+  table.insert(props, { Name = "Wall State Manager Code Name", Type = "string", Value = "WallStateManagerv2" })
+  table.insert(props, { Name = "Wall State Pin Pattern", Type = "string", Value = "Wall.#.Out" })
 
   table.insert(props, { Name = "Target UCI Name", Type = "string", Value = "Lobby_Panel" })
   table.insert(props, { Name = "Target UCI Page", Type = "string", Value = "Main" })
+  -- Welcome/idle layer shown when the system is OFF (after Shutdown Confirm). Bare
+  -- layer name, no topology suffix. Leave blank for a truly blank off-state.
+  table.insert(props, { Name = "Start System Page", Type = "string", Value = "Start_Page" })
+  -- Extra layer(s) this engine should ALWAYS keep hidden unless they're the active
+  -- layer. Comma-separated, e.g. "Welcome,Splash". Usually leave blank.
+  table.insert(props, { Name = "Idle Layers To Hide", Type = "string", Value = "" })
 
 
-  table.insert(props, { Name = "Startup Main Page", Type = "integer", Min = 1, Max = 20, Value = 1 })
 
   table.insert(props, { Name = "Number of Room Presets", Type = "integer", Min = 0, Max = 10, Value = 3 })
   table.insert(props, { Name = "Number of Popups", Type = "integer", Min = 0, Max = 20, Value = 3 })
@@ -148,7 +162,7 @@ function GetControlLayout(props)
   local y = 0
   
   table.insert(graphics, { Type = "Header", Text = "0. INSTRUCTIONS FOR MULTI-ROOM SYNC", Position = {0, y}, Size = {600, 20}, Color = sys_color })
-  table.insert(graphics, { Type = "Text", Text = string.format("For panels to sync automatically via walls, you MUST select this block, enable 'Script Access', and set its Code Name strictly to: UI_Controller_%s", props["Room Association"].Value), Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Bold" })
+  table.insert(graphics, { Type = "Text", Text = string.format("For panels to sync automatically via walls, you MUST select this block, enable 'Script Access', and set its Code Name strictly to: %s%s", props["Peer Code Name Prefix"].Value, props["Room Association"].Value), Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Bold" })
   y = y + 50
   
   table.insert(graphics, { Type = "Header", Text = "1. Active Script Routing Outputs (Debug)", Position = {0, y}, Size = {600, 20}, Color = header_color })
@@ -163,7 +177,7 @@ function GetControlLayout(props)
   y = y + 40
   
   table.insert(graphics, { Type = "Header", Text = "2. System Power State Engine - Room (" .. props["Room Association"].Value .. ")", Position = {0, y}, Size = {600, 20}, Color = sys_color })
-  table.insert(graphics, { Type = "Text", Text = "Central power controls tying directly into room relays via logic. Commands are seamlessly synchronized across remote rooms natively via RPC.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+  table.insert(graphics, { Type = "Text", Text = "Central power controls, synchronized across rooms via RPC. The dropdown under Sys Start picks which Main Page opens on power-on (by name). Powered OFF (after Shutdown Confirm) is intentionally blank.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
   y = y + 50
   
   layout["System_Start"] = { Style = "Button", Legend = "Sys Start", Position = {0, y}, Size = {90, 30} }
@@ -184,7 +198,7 @@ function GetControlLayout(props)
   local wx = props["Number of Walls"].Value
   if wx > 0 then
     table.insert(graphics, { Type = "Header", Text = "3. Combinable Wall Sensors", Position = {0, y}, Size = {600, 20}, Color = header_color })
-    table.insert(graphics, { Type = "Text", Text = "Wire active physical sensor pins tracking hardware walls. The engine seamlessly parses the dashed connections mapping adjacent combinable nodes.", Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
+    table.insert(graphics, { Type = "Text", Text = string.format("Wall state is auto-read from '%s' (%s). No wiring needed; the Wall_x_Open pins below still work as a manual override.", props["Wall State Manager Code Name"].Value, props["Wall State Pin Pattern"].Value), Position = {10, y+20}, Size = {580, 25}, HTextAlign = "Left", FontStyle = "Italic" })
     y = y + 50
     for i = 1, wx do
       layout["Wall_" .. i .. "_Open"] = { Style = "Button", Legend = "Wall " .. i .. " Open", Position = {(i-1)*130, y}, Size = {90, 30} }
@@ -234,7 +248,7 @@ function GetControlLayout(props)
   end
 
   table.insert(graphics, { Type = "Header", Text = "6. Hierarchical Navigation Router", Position = {0, y}, Size = {600, 20}, Color = header_color })
-  table.insert(graphics, { Type = "Text", Text = "Define main routes seamlessly tracking explicit topology math. 'Local Only' directly forces strict local room association isolated from combinations. Subpages are strictly bound securely bypassing combiners naturally. Targets are automatically pulled live from the UCI.", Position = {10, y+22}, Size = {580, 45}, HTextAlign = "Left", FontStyle = "Italic" })
+  table.insert(graphics, { Type = "Text", Text = "Define main routes seamlessly tracking explicit topology math. 'Local Only' targets the bare layer name with NO room/topology suffix appended. Subpages are strictly bound securely bypassing combiners naturally. Targets are automatically pulled live from the UCI.", Position = {10, y+22}, Size = {580, 45}, HTextAlign = "Left", FontStyle = "Italic" })
   y = y + 75
   for i = 1, props["Number of Main Pages"].Value do
     layout["Main_Page_" .. i] = { Style = "Button", Legend = "Main " .. i, Position = {0, y}, Size = {85, 30} }
@@ -263,32 +277,51 @@ if Controls then
   
   local uci_name = Properties["Target UCI Name"].Value
   local uci_page = Properties["Target UCI Page"].Value
-  
-  local startup_main = Properties["Startup Main Page"].Value
-  
+  local start_sys_page = Properties["Start System Page"].Value
+
+  -- Parse the "Idle Layers To Hide" CSV into a trimmed list once.
+  local idle_hide_layers = {}
+  for name in tostring(Properties["Idle Layers To Hide"].Value):gmatch("[^,]+") do
+     local nm = name:match("^%s*(.-)%s*$")
+     if nm ~= "" then table.insert(idle_hide_layers, nm) end
+  end
+
   local wall_count = Properties["Number of Walls"].Value
   local main_count = Properties["Number of Main Pages"].Value
   local preset_count = Properties["Number of Room Presets"].Value
   local popup_count = Properties["Number of Popups"].Value
   local nav_count = Properties["Number of Navigation Menus"].Value
+
+  local wall_mgr_name = Properties["Wall State Manager Code Name"].Value
+  local wall_pin_pat  = Properties["Wall State Pin Pattern"].Value
+
+  local peer_prefix = Properties["Peer Code Name Prefix"].Value
   
-  local active_main = startup_main
+  local active_main = 1  -- corrected to the Sys Start dropdown selection on power-on
   local active_subs = {}
   for i = 1, main_count do active_subs[i] = 1 end
   
   local active_popup = 0
-  
-  local last_bg_layer = ""
-  local last_sub_layer = ""
-  local last_popup_layer = ""
-  local last_nav_layers = {}
-  
+
+  -- Last visibility we DROVE for each layer name. Drives transition choice (fade only
+  -- on a real change) and lets us always re-assert so late/reconnected panels converge.
+  local layer_state = {}
+
   local trans_choices = {"none", "fade", "slide right", "slide left", "slide up", "slide down"}
   
   Controls.Start_Transition.Choices = trans_choices
   if Controls.Start_Transition.String == "" then Controls.Start_Transition.String = "fade" end
   Controls.Shutdown_Transition.Choices = trans_choices
   if Controls.Shutdown_Transition.String == "" then Controls.Shutdown_Transition.String = "fade" end
+
+  -- Sys Start dropdown = which MAIN PAGE opens on power-on (matched by target name).
+  -- Defaults to the first main page. Shutdown_Page = the confirm dialog (state 2).
+  if Controls.Start_Page_TargetName and Controls.Start_Page_TargetName.String == "" then
+     Controls.Start_Page_TargetName.String = "Page_1"
+  end
+  if Controls.Shutdown_Page_TargetName and Controls.Shutdown_Page_TargetName.String == "" then
+     Controls.Shutdown_Page_TargetName.String = "Shutdown_Page"
+  end
 
   for i = 1, popup_count do
      Controls["Popup_"..i.."_Transition"].Choices = trans_choices
@@ -444,31 +477,38 @@ if Controls then
     end
   end
 
-  local function SetLayerSafe(layer, isVisible, transition)
+  local function SetLayerSafe(layer, isVisible, transition, quiet)
     if layer and layer ~= "" and uci_name ~= "" and uci_page ~= "" then
        local trans = transition or "none"
-       print(string.format("Layer Cmd -> %s : Visible=%s", layer, tostring(isVisible)))
+       -- quiet = a periodic re-assert that isn't changing anything; skip the print
+       -- so the console only shows real transitions, not the convergence chatter.
+       if not quiet then
+          print(string.format("Layer Cmd -> %s : Visible=%s", layer, tostring(isVisible)))
+       end
        pcall(function() Uci.SetLayerVisibility(uci_name, uci_page, layer, isVisible, trans) end)
        pcall(function() Uci.SetSharedLayerVisibility(uci_name, layer, isVisible, trans) end)
     end
   end
   
-  local function GetTopologyString()
+  -- Flood-fill the room graph for an arbitrary wall-open state. is_open(w) returns the
+  -- open/closed boolean for wall w, so this serves both the live topology and the
+  -- "what topologies are possible" enumeration below.
+  local function ComputeTopology(is_open)
     local connected_rooms = {}
     if local_room ~= "" then connected_rooms[local_room] = true end
-    
+
     local changed = true
     while changed do
       changed = false
       for w = 1, wall_count do
-        if Controls["Wall_"..w.."_Open"].Boolean then
-          
+        if is_open(w) then
+
           local link_str = Controls["Wall_"..w.."_Linkage"].String
           local r1, r2 = link_str:match("(%w+)%s*%-%s*(%w+)")
-          if not r1 then 
-             r1, r2 = link_str:match("(%w+)%s*,%s*(%w+)") 
+          if not r1 then
+             r1, r2 = link_str:match("(%w+)%s*,%s*(%w+)")
           end
-          
+
           if r1 and r2 then
              if connected_rooms[r1] and not connected_rooms[r2] then
                connected_rooms[r2] = true
@@ -481,11 +521,38 @@ if Controls then
         end
       end
     end
-    
+
     local room_list = {}
     for r, _ in pairs(connected_rooms) do table.insert(room_list, r) end
     table.sort(room_list)
     return table.concat(room_list)
+  end
+
+  local function GetTopologyString()
+    return ComputeTopology(function(w) return Controls["Wall_"..w.."_Open"].Boolean end)
+  end
+
+  -- EVERY topology suffix this room can ever be in, across all wall combinations.
+  -- UpdateUI must know these so a layer named for a WIDER topology (e.g. "Audio-AB")
+  -- still gets explicitly hidden after the wall closes and we drop back to "A".
+  -- Enumerating only the current suffix is what left both pages visible at once.
+  local topo_variants = { local_room }
+
+  local function RebuildTopoVariants()
+    local seen, list = {}, {}
+    local combos = math.floor(2 ^ wall_count + 0.5)
+    if combos > 1024 then combos = 1024 end  -- guard the 10-wall worst case
+    for mask = 0, combos - 1 do
+      local t = ComputeTopology(function(w)
+         return (math.floor(mask / (2 ^ (w - 1))) % 2) == 1
+      end)
+      if t ~= "" and not seen[t] then
+         seen[t] = true
+         table.insert(list, t)
+      end
+    end
+    if #list == 0 then list = { local_room } end
+    topo_variants = list
   end
 
   local function SyncBroadcast(cmd_str)
@@ -493,13 +560,16 @@ if Controls then
      for r in topo:gmatch(".") do
         if r ~= local_room and r ~= "" then
            pcall(function()
-              local comp = Component.New("UI_Controller_" .. r)
+              local comp = Component.New(peer_prefix .. r)
               if comp and comp["RPC_Command"] then comp["RPC_Command"].String = cmd_str end
            end)
         end
      end
   end
 
+  -- Authoritatively drives EVERY managed layer to its correct visibility (on AND
+  -- off) on each call. Safe to call repeatedly -- unchanged layers re-assert quietly
+  -- with no flicker. The periodic tick uses this to converge physical panels.
   local function UpdateUI()
     local topo_str = GetTopologyString()
     
@@ -548,8 +618,6 @@ if Controls then
     local sub_trans = "none"
     local pop_trans = "none"
     
-    local start_pg_name = ""
-    if Controls.Start_Page_TargetName then start_pg_name = Controls.Start_Page_TargetName.String end
     local shut_pg_name = ""
     if Controls.Shutdown_Page_TargetName then shut_pg_name = Controls.Shutdown_Page_TargetName.String end
     
@@ -560,13 +628,13 @@ if Controls then
     end
     
     if sys_state == 0 then
-      new_bg_layer = start_pg_name
+      new_bg_layer = start_sys_page  -- powered OFF: show the Start System / welcome page
       bg_trans = Controls.Start_Transition.String
-      
+
     elseif sys_state == 1 then
       local p_name = Controls["Main_Page_"..active_main.."_TargetName"].String
       if Controls["Main_Page_"..active_main.."_Local_Only"].Boolean then
-         new_bg_layer = append_suffix(p_name, local_room)
+         new_bg_layer = p_name  -- Local Only: bare layer name, no room/topology suffix
       else
          new_bg_layer = append_suffix(p_name, topo_str)
       end
@@ -578,7 +646,7 @@ if Controls then
          if act_s > master_sub_count then act_s = master_sub_count end -- bounds check defense
          local s_name = Controls["Main_"..active_main.."_Sub_"..act_s.."_TargetName"].String
          if Controls["Main_Page_"..active_main.."_Local_Only"].Boolean then
-            new_sub_layer = append_suffix(s_name, local_room)
+            new_sub_layer = s_name  -- Local Only: bare layer name, no room/topology suffix
          else
             new_sub_layer = append_suffix(s_name, topo_str)
          end
@@ -590,50 +658,91 @@ if Controls then
       bg_trans = Controls.Shutdown_Transition.String
     end
     
-    if new_bg_layer ~= last_bg_layer then
-       SetLayerSafe(last_bg_layer, false, bg_trans)
-       SetLayerSafe(new_bg_layer, true, bg_trans)
-       last_bg_layer = new_bg_layer
+    -- Active popup layer (if any).
+    if active_popup > 0 then
+       new_popup_layer = Controls["Popup_"..active_popup.."_TargetName"].String
+       pop_trans = Controls["Popup_"..active_popup.."_Transition"].String
     end
-    
-    -- Aggressive nuke: ensure Start_Page is relentlessly forced OFF if we are not in State 0
-    if sys_state ~= 0 and start_pg_name ~= "" and new_bg_layer ~= start_pg_name then
-       SetLayerSafe(start_pg_name, false, "none")
+
+    -- ===== Authoritative layer application ===================================
+    -- Build the set of layers that SHOULD be visible right now (layer -> transition
+    -- to use when it first appears).
+    local desired = {}
+    local function want(layer, trans)
+       if layer and layer ~= "" then desired[layer] = trans or "none" end
     end
-    
-    -- Aggressive nuke: ensure all possible pages are forced OFF if in State 0
-    if sys_state == 0 then
-       for i=1, main_count do
-          local p_name = Controls["Main_Page_"..i.."_TargetName"].String
-          if p_name ~= "" and p_name ~= start_pg_name then
-             SetLayerSafe(append_suffix(p_name, local_room), false, "none")
-             SetLayerSafe(append_suffix(p_name, topo_str), false, "none")
-          end
-          local sc = ResolveSubCount(i, Properties)
-          for j=1, sc do
-             local s_name = Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String
-             if s_name ~= "" then
-                SetLayerSafe(append_suffix(s_name, local_room), false, "none")
-                SetLayerSafe(append_suffix(s_name, topo_str), false, "none")
-             end
-          end
+    want(new_bg_layer, bg_trans)
+    want(new_sub_layer, sub_trans)
+    want(new_popup_layer, pop_trans)
+    if sys_state ~= 0 then
+       for i = 1, nav_count do
+          want(Controls["Navigation_Menu_"..i.."_TargetName"].String,
+               Controls["Navigation_Menu_"..i.."_Transition"].String)
        end
-       for x=1, popup_count do
-          local pop_name = Controls["Popup_"..x.."_TargetName"].String
-          if pop_name ~= "" then SetLayerSafe(pop_name, false, "none") end
-       end
-       if shut_pg_name ~= "" and shut_pg_name ~= start_pg_name then SetLayerSafe(shut_pg_name, false, "none") end
     end
-    
+
+    -- Drive ONE layer to its desired visibility. We ALWAYS write -- ON and OFF -- so
+    -- any viewer that booted late or missed a command converges (this is what hides a
+    -- stuck start page on a real panel). The configured transition is applied only on
+    -- a real change; an unchanged re-assert uses "none" and is written quietly (no
+    -- console spam, no flicker).
+    local function drive(layer)
+       if not layer or layer == "" then return end
+       local wantVis = (desired[layer] ~= nil)
+       local changed = (layer_state[layer] ~= wantVis)
+       local trans = (changed and wantVis) and desired[layer] or "none"
+       SetLayerSafe(layer, wantVis, trans, not changed)
+       layer_state[layer] = wantVis
+    end
+
+    -- Enumerate EVERY layer this engine can manage, deduped, then drive each exactly
+    -- once. Deduping matters: driving the same layer twice in one pass re-asserts it
+    -- with a "none" transition and stomps the fade it was just given.
+    local managed, managed_list = {}, {}
+    local function manage(name)
+       if name and name ~= "" and not managed[name] then
+          managed[name] = true
+          table.insert(managed_list, name)
+       end
+    end
+
+    -- Bare (Local Only) + local room + every possible topology suffix. Covering all
+    -- topologies -- not just the current one -- is what lets a stale "Page-AB" layer be
+    -- hidden once the wall closes and the room drops back to "Page-A".
+    local function manage_family(base)
+       if not base or base == "" then return end
+       manage(base)
+       manage(append_suffix(base, local_room))
+       for _, t in ipairs(topo_variants) do manage(append_suffix(base, t)) end
+    end
+
+    for i = 1, main_count do
+       manage_family(Controls["Main_Page_"..i.."_TargetName"].String)
+       local sc = ResolveSubCount(i, Properties)
+       for j = 1, sc do
+          manage_family(Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String)
+       end
+    end
+    for x = 1, popup_count do manage(Controls["Popup_"..x.."_TargetName"].String) end
+    for i = 1, nav_count do manage(Controls["Navigation_Menu_"..i.."_TargetName"].String) end
+    manage(start_sys_page)
+    manage(shut_pg_name)
+    for _, nm in ipairs(idle_hide_layers) do manage(nm) end
+
+    -- Safety net: anything we previously drove VISIBLE but no longer enumerate (a
+    -- TargetName was edited, linkage changed, wall count changed) still has to be
+    -- hidden, or it stays on screen forever. layer_state remembers what we turned on.
+    for name, vis in pairs(layer_state) do
+       if vis and not managed[name] then manage(name) end
+    end
+    for name, _ in pairs(desired) do manage(name) end
+
+    for _, name in ipairs(managed_list) do drive(name) end
+
     Controls.Current_Full_Page_Target.String = new_bg_layer
-    
-    if new_sub_layer ~= last_sub_layer then
-       if last_sub_layer ~= "" then SetLayerSafe(last_sub_layer, false, sub_trans) end
-       if new_sub_layer ~= "" then SetLayerSafe(new_sub_layer, true, sub_trans) end
-       last_sub_layer = new_sub_layer
-    end
     Controls.Current_Secondary_Sub_Target.String = new_sub_layer
-    
+    Controls.Current_Popup_Target.String = new_popup_layer
+
     for i = 1, main_count do
       local sub_active = (sys_state == 1 and i == active_main)
       local alt_count = ComputePage1Subs(wall_count)
@@ -641,43 +750,39 @@ if Controls then
          Controls["Main_Page_"..i.."_Alt_"..k.."_Active"].Boolean = (sub_active and k == topo_idx)
       end
     end
-    
-    if active_popup > 0 then
-       local p_name = Controls["Popup_"..active_popup.."_TargetName"].String
-       new_popup_layer = p_name
-       pop_trans = Controls["Popup_"..active_popup.."_Transition"].String
-    end
-    
-    if new_popup_layer ~= last_popup_layer then
-       SetLayerSafe(last_popup_layer, false, pop_trans)
-       SetLayerSafe(new_popup_layer, true, pop_trans)
-       last_popup_layer = new_popup_layer
-    end
-    Controls.Current_Popup_Target.String = new_popup_layer
-    
-    for i = 1, nav_count do
-       local new_nav_layer = ""
-       local nav_trans = Controls["Navigation_Menu_"..i.."_Transition"].String
-       if sys_state ~= 0 then
-          new_nav_layer = Controls["Navigation_Menu_"..i.."_TargetName"].String
-       end
-       
-       if new_nav_layer ~= last_nav_layers[i] then
-          if last_nav_layers[i] and last_nav_layers[i] ~= "" then
-             SetLayerSafe(last_nav_layers[i], false, nav_trans)
-          end
-          if new_nav_layer ~= "" then
-             SetLayerSafe(new_nav_layer, true, nav_trans)
-          end
-          last_nav_layers[i] = new_nav_layer
-       end
-    end
+  end
+
+  -- Apply the Sys Start dropdown (Start_Page_TargetName) selection to the active
+  -- page state. The selection can be either a MAIN page target name or a SUBPAGE
+  -- target name -- if it's a subpage we jump to its parent main page AND activate
+  -- that subpage. Falls back to Main Page 1 if nothing matches.
+  local function ApplyStartupSelection()
+     local target = Controls.Start_Page_TargetName and Controls.Start_Page_TargetName.String or ""
+     if target ~= "" then
+        for i = 1, main_count do
+           if Controls["Main_Page_"..i.."_TargetName"].String == target then
+              active_main = i
+              return
+           end
+        end
+        for i = 1, main_count do
+           local sc = ResolveSubCount(i, Properties)
+           for j = 1, sc do
+              if Controls["Main_"..i.."_Sub_"..j.."_TargetName"].String == target then
+                 active_main = i
+                 active_subs[i] = j
+                 return
+              end
+           end
+        end
+     end
+     active_main = 1
   end
 
   local function PerformSystemStart(trigger_pulse)
      if sys_state == 0 then
         sys_state = 1
-        active_main = startup_main
+        ApplyStartupSelection()
         SyncBroadcast("START")
         if trigger_pulse then Controls.System_Power_On_Pulse:Trigger() end
         UpdateUI()
@@ -699,6 +804,44 @@ if Controls then
      if sys_state ~= 1 then
         PerformSystemStart(true)
      end
+  end
+
+  -- Reconcile power state across rooms that just became connected (or disconnected) via a wall change.
+  -- Spec: "all connected rooms turn on and off together." So if a wall opens and any connected peer
+  -- is already powered, the local panel must leave its Start page and follow. Conversely, if we
+  -- are the powered room, we re-broadcast START so any newly-attached OFF rooms wake up.
+  -- sys_state == 2 (shutdown_requested) is treated as transient; we don't drag peers into that state
+  -- on a wall transition -- the user will either Confirm or Cancel via the existing sync paths.
+  local function WallTopologySync()
+    local topo_str = GetTopologyString()
+
+    if sys_state == 1 then
+      -- We are ON. Tell every peer in the new topology to start; PerformSystemStart on the
+      -- receiving side is a no-op if it's already on, so this is safe for closed walls / no-op cases.
+      SyncBroadcast("START")
+      return
+    end
+
+    if sys_state == 0 then
+      -- We are OFF. Probe each connected peer's System_Power_State directly via Component.New.
+      -- If any peer is powered, perform a local start (which will SyncBroadcast START, but
+      -- already-on peers will no-op on receipt, so there is no echo storm).
+      for r in topo_str:gmatch(".") do
+        if r ~= local_room and r ~= "" then
+          local peer_on = false
+          pcall(function()
+            local comp = Component.New(peer_prefix .. r)
+            if comp and comp["System_Power_State"] and comp["System_Power_State"].Boolean then
+              peer_on = true
+            end
+          end)
+          if peer_on then
+            PerformSystemStart(true)
+            return
+          end
+        end
+      end
+    end
   end
 
   Controls.RPC_Command.EventHandler = function(ctrl)
@@ -724,7 +867,7 @@ if Controls then
        if action == "PRESET" then
           if sys_state == 1 then
              local p = tonumber(param)
-             active_main = startup_main
+             ApplyStartupSelection()
              UpdateUI()
           end
        end
@@ -803,8 +946,9 @@ if Controls then
   
   for p = 1, popup_count do
     Controls["Popup_"..p.."_Toggle"].EventHandler = function(ctrl)
-       PerformAutoWake()
-       
+       -- NOTE: popups are overlays (help/info/settings/confirm) and must NOT
+       -- power the system on. Do not call PerformAutoWake() here -- unlike main
+       -- page / sub / preset taps, opening a popup is not a "use the system" intent.
        if ctrl.Boolean then
           if active_popup ~= p then
              active_popup = p
@@ -831,7 +975,7 @@ if Controls then
     Controls["Room_Preset_"..p].EventHandler = function(ctrl)
        PerformAutoWake()
        if sys_state == 1 and ctrl.Boolean then
-          active_main = startup_main
+          ApplyStartupSelection()
           SyncBroadcast("PRESET|"..p)
           UpdateUI()
        end
@@ -841,8 +985,72 @@ if Controls then
   local def_links = {"A-B", "B-C", "C-D", "D-E", "E-F", "F-G", "G-H", "H-I", "I-J", "J-K"}
   for w = 1, wall_count do
     if Controls["Wall_"..w.."_Linkage"].String == "" then Controls["Wall_"..w.."_Linkage"].String = def_links[w] or "X-Y" end
-    Controls["Wall_"..w.."_Linkage"].EventHandler = function() UpdateUI() end
-    Controls["Wall_"..w.."_Open"].EventHandler = function() UpdateUI() end
+    -- Linkage defines the room graph, so the set of possible topologies changes with it.
+    Controls["Wall_"..w.."_Linkage"].EventHandler = function()
+       RebuildTopoVariants()
+       UpdateUI()
+    end
+    Controls["Wall_"..w.."_Open"].EventHandler = function()
+       UpdateUI()
+       WallTopologySync()
+    end
+  end
+
+  -- Build the possible-topology list now that the linkage defaults above are populated.
+  RebuildTopoVariants()
+
+  -- ---------------------------------------------------------------------------
+  -- Read wall state DIRECTLY from the Wall State Manager component so panels stay
+  -- in sync without each one needing its Wall_x_Open pin wired. We mirror the
+  -- manager's Wall.#.Out boolean into our local Wall_x_Open control, then run the
+  -- same reaction (UpdateUI + WallTopologySync) the wired pin would. The wired pin
+  -- still works as a manual override. Setting a control from script does not fire
+  -- its own EventHandler, so we invoke the reaction explicitly.
+  -- ---------------------------------------------------------------------------
+  local wall_mgr_comp = nil
+  if wall_mgr_name ~= "" then
+    pcall(function() wall_mgr_comp = Component.New(wall_mgr_name) end)
+  end
+
+  local function WallMgrPin(w)
+    return (wall_pin_pat:gsub("#", tostring(w)))
+  end
+
+  local function ReadMgrWall(w)
+    local v = nil
+    pcall(function()
+      local pin = WallMgrPin(w)
+      if wall_mgr_comp and wall_mgr_comp[pin] then v = wall_mgr_comp[pin].Boolean end
+    end)
+    return v
+  end
+
+  local function SyncWallFromManager(w, react)
+    local v = ReadMgrWall(w)
+    if v == nil then return end
+    if Controls["Wall_"..w.."_Open"].Boolean ~= v then
+      Controls["Wall_"..w.."_Open"].Boolean = v
+    end
+    if react then
+      UpdateUI()
+      WallTopologySync()
+    end
+  end
+
+  if wall_mgr_comp then
+    for w = 1, wall_count do
+      local pin = WallMgrPin(w)
+      local ok = false
+      pcall(function()
+        if wall_mgr_comp[pin] then
+          wall_mgr_comp[pin].EventHandler = function() SyncWallFromManager(w, true) end
+          ok = true
+        end
+      end)
+      if not ok then
+        print(string.format("Wall manager '%s' pin '%s' not found; relying on wired Wall_%d_Open.", wall_mgr_name, pin, w))
+      end
+    end
   end
 
   if Controls.Start_Page_TargetName then Controls.Start_Page_TargetName.EventHandler = function() UpdateUI() end end
@@ -851,11 +1059,28 @@ if Controls then
   -- Auto-populate the TargetName ComboBox Choices on plugin load so users see the dropdown
   -- without having to press 'Pull Live UCI Targets' first. Fails gracefully via the strategy chain.
   pcall(ScrapeUciLayers)
-  
+
+  -- Prime each wall from the manager at boot so the topology is correct from the
+  -- first paint. We don't react (no auto-wake) here -- boot intentionally starts OFF.
+  if wall_mgr_comp then
+    for w = 1, wall_count do SyncWallFromManager(w, false) end
+  end
+
   -- Explicitly initialize system to OFF state when program is sent or rebooted
   Controls.System_Power_Off_Pulse:Trigger()
-  
+
   -- Evaluate UI state at boot so the Start_Page is actively tracked for the first transition off.
   UpdateUI()
+
+  -- Periodic convergence tick: re-assert the layers that should be visible every few
+  -- seconds (cheap, "none" transitions). This makes a physical panel that booted late,
+  -- reconnected, or dropped a layer command converge to the script's state -- the usual
+  -- cause of "works in the emulator, different on the panel".
+  local reassert_timer = Timer.New()
+  reassert_timer.EventHandler = function()
+     UpdateUI()
+     reassert_timer:Start(3)  -- re-arm (Q-SYS timers are one-shot)
+  end
+  reassert_timer:Start(3)
 
 end
